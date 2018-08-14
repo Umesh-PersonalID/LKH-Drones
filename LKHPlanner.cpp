@@ -1,3 +1,4 @@
+//comments by JLB
 #include "LKHPlanner.h"
 
 #include <QDebug>
@@ -22,32 +23,32 @@ QVector<QVector<QVector<quint32> > > g_turn;
 
 void setData(int ncount, CCdatagroup *D, quint32 res, quint32 pcs, quint32 lambda, quint32 gamma, quint32 kappa) {
     // sqrt(2) < 1.5 < 2
-    qreal max_dist = 1.5 * res;
-    g_dist = QVector<QVector<quint32> >(ncount);
-    for (int i = 0; i < ncount; i++) {
-        g_dist[i] = QVector<quint32>(ncount);
-        for (int j = 0; j < ncount; j++) {
-            qreal dist = QGeoCoordinate(D->x[i], D->y[i]).distanceTo(QGeoCoordinate(D->x[j], D->y[j]));
-            if (!dist || dist > max_dist) {
-                g_dist[i][j] = kappa;
+    qreal max_dist = 1.5 * res;//upper bound on distance
+    g_dist = QVector<QVector<quint32>>(ncount);//init vector of vector of ints of capcity equalling the total number of nodes (container needs to hold 1 onto 1 relation)
+    for (int i = 0; i < ncount; i++) {//for each index (i) less than the total node count
+        g_dist[i] = QVector<quint32>(ncount);//set up a vector for each node to contain distance to the other nodes
+        for (int j = 0; j < ncount; j++) {//for each index (j) less than the total node count
+            qreal dist = QGeoCoordinate(D->x[i], D->y[i]).distanceTo(QGeoCoordinate(D->x[j], D->y[j]));//calculate the distance from node i to node j 
+            if (!dist || dist > max_dist) {//first condition means o distance, second means the calculated distance is farther than possible
+                g_dist[i][j] = kappa;//TODO: not sure why we use kappa, which is defined as the drones carrying capacity
             } else {
-                g_dist[i][j] = lambda * pcs * dist;
+                g_dist[i][j] = lambda * pcs * dist;//TODO: I think pcs has to do with size of the grid, confirm
             }
         }
     }
 
-    g_turn = QVector<QVector<QVector<quint32> > >(ncount);
-    for (int i = 0; i < ncount; i++) {
+    g_turn = QVector<QVector<QVector<quint32> > >(ncount);//set vector of vector of vector of ints of capcity equalling the total number of nodes
+    for (int i = 0; i < ncount; i++) {//for each index (i) less than the total node count
         g_turn[i] = QVector<QVector<quint32> >(ncount);
-        for (int j = 0; j < ncount; j++) {
+        for (int j = 0; j < ncount; j++) {//for each index (j) less than the total node count
             g_turn[i][j] = QVector<quint32>(ncount);
-            for (int k = 0; k < ncount; k++) {
+            for (int k = 0; k < ncount; k++) {//for each index (k) less than the total node count
                 if (g_dist[i][j] > lambda * pcs * max_dist || g_dist[j][k] > lambda * pcs * max_dist) {
-                    g_turn[i][j][k] = kappa;
+                    g_turn[i][j][k] = kappa;//TODO: not sure why we use kappa, which is defined as the drones carrying capacity
                 } else {
-                    qreal r = QGeoCoordinate(D->x[i], D->y[i]).distanceTo(QGeoCoordinate(D->x[j], D->y[j]));
-                    qreal e = QGeoCoordinate(D->x[j], D->y[j]).distanceTo(QGeoCoordinate(D->x[k], D->y[k]));
-                    qreal s = QGeoCoordinate(D->x[k], D->y[k]).distanceTo(QGeoCoordinate(D->x[i], D->y[i]));
+                    qreal r = QGeoCoordinate(D->x[i], D->y[i]).distanceTo(QGeoCoordinate(D->x[j], D->y[j]));//1st side of the triangle
+                    qreal e = QGeoCoordinate(D->x[j], D->y[j]).distanceTo(QGeoCoordinate(D->x[k], D->y[k]));//2nd side of the triangle
+                    qreal s = QGeoCoordinate(D->x[k], D->y[k]).distanceTo(QGeoCoordinate(D->x[i], D->y[i]));//3rd side of the triangle
                     qreal t = (r * r + e * e - s * s) / (2.0 * r * e);
                     if (t > 1.0) {
                         t = 1.0;
@@ -55,9 +56,9 @@ void setData(int ncount, CCdatagroup *D, quint32 res, quint32 pcs, quint32 lambd
                         t = -1.0;
                     }
 
-                    qreal turn = M_PI - acos(t);
+                    qreal turn = M_PI - acos(t);//calculate angle
 
-                    g_turn[i][j][k] = gamma * pcs * turn;
+                    g_turn[i][j][k] = gamma; //JLB this used to also be here when angle mattered->* pcs * turn;//removing this sets the constant gamma to be a constant factor for all turns
                 }
             }
         }

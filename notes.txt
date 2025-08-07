@@ -1,0 +1,24 @@
+Please follow these steps:
+1) Install IBM CPLEX solver (Professor has an academic copy).
+2) Edit cplex.pri to point to the right location
+3) Download Concorde TSP solver:
+http://www.math.uwaterloo.ca/tsp/concorde/downloads/codes/src/co031219.tgz
+
+4) Extract it, go to LINKERN folder and delete linkern.c
+5) In the same folder, edit Makefile to delete linkern.c
+6) Build the concorde project.
+7) Edit cc_lkh.pri to point to the right location
+8) Follow UB-ANC-Planner to make the project
+
+
+1. change path in cc_lkh.pri 
+2. change path in cplex.pri change CPXROOT path
+3. delete linkern.c file from concorde/LINKERN folder
+4. command : qmake .
+5. command : make -j4
+6. I have made one change to LIBS path, remove the ldl from LIBS
+
+
+
+command:
+./ub-anc-planner -f mission_file.txt -a 1164 -m 173 -r 8

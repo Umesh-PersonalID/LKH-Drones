@@ -1,4 +1,4 @@
-CCROOT = /home/jpound87/Desktop/concorde
+CCROOT = /home/umesh/concorde
 
 LIBS += $${CCROOT}/LINKERN/linkern.a $${CCROOT}/KDTREE/kdtree.a $${CCROOT}/UTIL/util.a \
 

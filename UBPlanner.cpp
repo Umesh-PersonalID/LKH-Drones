@@ -16,14 +16,16 @@
 ILOSTLBEGIN // IBM Macro -> functions like "using namespace std" if the STL is used
 
 UBPlanner::UBPlanner(QObject *parent) : QObject(parent),
-                                        m_file(""),
-                                        m_res(10),
+                                        m_file("grid.txt"),
+                                        m_res(10.0),
                                         m_limit(1000000000),
                                         m_gap(0.01),
-                                        m_lambda(1),
-                                        m_gamma(1),
+                                        m_lambda(1.0),
+                                        m_gamma(1.0),
                                         m_kappa(1000000000),
-                                        m_pcn(100)
+                                        m_pcn(100),
+                                        m_grid_width(0),
+                                        m_grid_height(0)
 {
     m_areas.clear();
     m_nodes.clear();
@@ -31,6 +33,11 @@ UBPlanner::UBPlanner(QObject *parent) : QObject(parent),
     m_depots.clear();
 
     m_agent_paths.clear();
+}
+
+UBPlanner::~UBPlanner()
+{
+    m_obstacle_map.clear();
 }
 
 QList<Waypoint *> UBPlanner::loadWaypoints(const QString &loadFile)
@@ -112,54 +119,71 @@ bool UBPlanner::storeWaypoints(const QString &storeFile, QList<Waypoint *> &wps)
 
 void UBPlanner::startPlanner()
 {
-    QList<Waypoint *> wps = loadWaypoints(m_file);     // parse the waypoint file and place the results in vector
-    QList<Waypoint *>::const_iterator i = wps.begin(); // load the first waypoint instruction (waypoint info contains movement instruction)
-    while (i != wps.end())
-    { // for each waypoint instuction
-        if ((*i)->getAction() == MAV_CMD_NAV_TAKEOFF)
-        { // takeoff starts a bounding box, first box defines outer area
-
-            QPolygonF area;
-            area << QPointF((*i)->getLatitude(), (*i)->getLongitude());
-
-            QList<Waypoint *>::const_iterator j = i;
-            while (j != wps.end())
-            {        // for each waypoint instuction, which defines corners inside a bounding box
-                j++; // iterate inner
-
-                area << QPointF((*j)->getLatitude(), (*j)->getLongitude()); // add a new point to the area
-
-                if ((*j)->getAction() == MAV_CMD_NAV_LAND)
-                {          // land ends each bounding box
-                    i = j; // update outer loop
-
-                    area << area[0]; // complete the area by return to start
-                    m_areas << area; // add the area to the list of defined areas
-
-                    break;
-                }
-            }
-        }
-        else if ((*i)->getAction() == MAV_CMD_NAV_RETURN_TO_LAUNCH)
-        { // RTL defines an agents start point
-            m_depots << 0;
-            m_agents << QGeoCoordinate((*i)->getLatitude(), (*i)->getLongitude()); // set agent start location
-            m_agent_paths << QVector<QPair<quint32, quint32>>();
-        }
-
-        i++; // iterate outer
+    if (m_gamma < 0)
+    {
+        cout << "gamma is not set, using the table for 45, 90, and 135 degrees" << endl;
+        m_gamma_45 = 0.09592376;
+        m_gamma_90 = 0.90877848;
+        m_gamma_135 = 2.50663892;
     }
+    else
+    {
+        m_gamma_45 = 45.0 * m_gamma;
+        m_gamma_90 = 90.0 * m_gamma;
+        m_gamma_135 = 135.0 * m_gamma;
+    }
+    // multiplying coefficients by 1000 so will be J/m and J/deg for floating point adjustment. later it will be divided
+    m_gamma *= 1000.0;
+    m_gamma_45 *= 1000.0;
+    m_gamma_90 *= 1000.0;
+    m_gamma_135 *= 1000.0;
+    m_lambda *= 1000.0;
+    /*
+        QList<Waypoint*> wps = loadWaypoints(m_file);//parse the waypoint file and place the results in vector
+        QList<Waypoint*>::const_iterator i = wps.begin();//load the first waypoint instruction (waypoint info contains movement instruction)
+        while (i != wps.end()) {//for each waypoint instuction
+            if ((*i)->getAction() == MAV_CMD_NAV_TAKEOFF) {//takeoff starts a bounding box, first box defines outer area
 
+                QPolygonF area;
+                area << QPointF((*i)->getLatitude(), (*i)->getLongitude());
+
+                QList<Waypoint*>::const_iterator j = i;
+                while (j != wps.end()) {//for each waypoint instuction, which defines corners inside a bounding box
+                    j++;//iterate inner
+
+                    area << QPointF((*j)->getLatitude(), (*j)->getLongitude());//add a new point to the area
+
+                    if ((*j)->getAction() == MAV_CMD_NAV_LAND) {//land ends each bounding box
+                        i = j;//update outer loop
+
+                        area << area[0];//complete the area by return to start
+                        m_areas << area;//add the area to the list of defined areas
+
+                        break;
+                    }
+                }
+            } else if ((*i)->getAction() == MAV_CMD_NAV_RETURN_TO_LAUNCH) {//RTL defines an agents start point
+                m_depots << 0;
+                m_agents << QGeoCoordinate((*i)->getLatitude(), (*i)->getLongitude());//set agent start location
+                m_agent_paths << QVector<QPair<quint32, quint32> >();
+            }
+
+            i++;//iterate outer
+        }
+    */
     QElapsedTimer total_time; // Qt -> QElapsedTimer provides a fast way to calculate elapsed times
     total_time.start();
 
-    decompose(); // make the area from the input area data
+    // manual building of grid
+    build_grid();
+    /*
+    decompose();//make the area from the input area data
 
-    if (!divide())
-    { // divide the area amung agents
+    if (!divide()) { //divide the area amung agents
         cerr << "Unable to divide the area between agents!" << endl;
         exit(EXIT_FAILURE);
     }
+    */
 
     QElapsedTimer agent_time; // Qt -> QElapsedTimer provides a fast way to calculate elapsed times
     for (int a = 0; a < m_agents.size(); a++)
@@ -171,14 +195,14 @@ void UBPlanner::startPlanner()
             exit(EXIT_FAILURE);
         }
 
-        cout << "Elapsed time for agent " << a << " is " << agent_time.elapsed() / 1000.0 << endl;
+        cout << "Elapsed yo time for agent " << a << " is " << agent_time.elapsed() / 1000.0 << endl;
 
         buildMission(a);
     }
 
     emit planReady(); // emit is apparantly a non functional keyword, just there to let programmer know this 'emits' a signal
 
-    cout << "The planner has successfully planned the mission for each agent in total time " << total_time.elapsed() / 1000.0 << endl;
+    cout << "The planner Umesh has successfully planned the mission for each agent in total time " << total_time.elapsed() / 1000.0 << endl;
     exit(EXIT_SUCCESS);
 }
 
@@ -197,8 +221,8 @@ bool UBPlanner::decompose()
     qreal xazimuth = s.azimuthTo(r); // Qt-> azimuthTo returns the azimuth (or bearing) in degrees from this coordinate to the other
     qreal yazimuth = s.azimuthTo(u);
 
-    qreal xstep = ceil(s.distanceTo(r) / m_res); // determine integer grid size in x direction
-    qreal ystep = ceil(s.distanceTo(u) / m_res); // determine integer grid size in y direction
+    int xstep = ceil(s.distanceTo(r) / m_res); // determine integer grid size in x direction
+    int ystep = ceil(s.distanceTo(u) / m_res); // determine integer grid size in y direction
 
     for (int j = 0; j < ystep; j++)
     { // for each step in the y direction
@@ -401,7 +425,7 @@ bool UBPlanner::planAgent(quint32 agent)
         dist_node_node.add(IloIntArray(env, m_agent_paths[agent].size())); // add number of node to node connections to array at agent index
     }
 
-    IloIntArray3 turn_node_node_node(env);
+    IloIntArray3 turn_node_node_node_cost(env);
     for (int i = 0; i < m_agent_paths[agent].size(); i++)
     {
         IloIntArray2 turn_node_node(env);
@@ -410,7 +434,7 @@ bool UBPlanner::planAgent(quint32 agent)
             turn_node_node.add(IloIntArray(env, m_agent_paths[agent].size()));
         }
 
-        turn_node_node_node.add(turn_node_node);
+        turn_node_node_node_cost.add(turn_node_node);
     }
 
     // Jalil-> sqrt(2) < 1.5 < 2
@@ -419,206 +443,244 @@ bool UBPlanner::planAgent(quint32 agent)
     {
         for (int j = 0; j < m_agent_paths[agent].size(); j++)
         {
-            qreal dist = m_nodes[m_agent_paths[agent][i].first].distanceTo(m_nodes[m_agent_paths[agent][j].first]);
-            if (!dist || dist > max_dist)
+            // UMESH[TODO]: implemented obstacle check and updated the distance calculation accordingly and use m_obstacle_map
+
+            // function to compute brehesenham line pixels between two points
+            // and check if the line intersects with an obstacle
+            quint32 node_p = m_agent_paths[agent][i].first;
+            quint32 node_q = m_agent_paths[agent][j].first;
+            QGeoCoordinate p = m_nodes[node_p];
+            QGeoCoordinate q = m_nodes[node_q];
+
+            // check if the line between p and q intersects with an obstacle
+            qDebug() << "DEBUG: Checking line intersection between nodes" << i << "and" << j;
+            qDebug() << "DEBUG: Node" << i << "coords:" << p.longitude() << p.latitude();
+            qDebug() << "DEBUG: Node" << j << "coords:" << q.longitude() << q.latitude();
+
+            if (checkLineIntersection(p, q, m_obstacle_map, m_grid_width, m_grid_height))
             {
-                dist_node_node[i][j] = m_kappa;
+                qDebug() << "DEBUG: OBSTACLE DETECTED! Setting distance to kappa for nodes" << i << "and" << j;
+                dist_node_node[i][j] = m_kappa; // if it does, set distance to kappa
             }
             else
             {
-                dist_node_node[i][j] = m_pcn * dist;
-            }
-        }
-    }
-
-    for (int i = 0; i < m_agent_paths[agent].size(); i++)
-    {
-        for (int j = 0; j < m_agent_paths[agent].size(); j++)
-        {
-            for (int k = 0; k < m_agent_paths[agent].size(); k++)
-            {
-                if (dist_node_node[i][j] > m_pcn * max_dist || dist_node_node[j][k] > m_pcn * max_dist)
+                qDebug() << "DEBUG: No obstacle detected, calculating normal distance";
+                qreal dist = m_nodes[m_agent_paths[agent][i].first].distanceTo(m_nodes[m_agent_paths[agent][j].first]);
+                if (!dist || dist > max_dist)
                 {
-                    turn_node_node_node[i][j][k] = m_kappa;
+                    dist_node_node[i][j] = m_kappa;
                 }
                 else
                 {
-                    qreal r = m_nodes[m_agent_paths[agent][i].first].distanceTo(m_nodes[m_agent_paths[agent][j].first]);
-                    qreal e = m_nodes[m_agent_paths[agent][j].first].distanceTo(m_nodes[m_agent_paths[agent][k].first]);
-                    qreal s = m_nodes[m_agent_paths[agent][k].first].distanceTo(m_nodes[m_agent_paths[agent][i].first]);
-                    qreal t = (r * r + e * e - s * s) / (2.0 * r * e);
-                    if (t > 1.0)
-                    {
-                        t = 1.0;
-                    }
-                    else if (t < -1.0)
-                    {
-                        t = -1.0;
-                    }
-
-                    qreal turn = M_PI - acos(t);
-
-                    turn_node_node_node[i][j][k] = m_pcn * turn;
+                    dist_node_node[i][j] = (quint32)(m_pcn * dist);
                 }
             }
         }
-    }
 
-    IloArray<IloBoolVarArray> x_node_node(env);
-    for (int i = 0; i < m_agent_paths[agent].size(); i++)
-    {
-        x_node_node.add(IloBoolVarArray(env, m_agent_paths[agent].size()));
-    }
-
-    IloNumVarArray u(env, m_agent_paths[agent].size(), 0.0, IloInfinity, ILOFLOAT);
-
-    try
-    {
-        IloModel mod(env);
-
-        IloExpr total_dist(env);
         for (int i = 0; i < m_agent_paths[agent].size(); i++)
         {
             for (int j = 0; j < m_agent_paths[agent].size(); j++)
             {
-                if (j == i)
-                {
-                    continue;
-                }
-
-                total_dist += dist_node_node[i][j] * x_node_node[i][j];
-            }
-        }
-
-        IloExpr total_turn(env);
-        for (int i = 0; i < m_agent_paths[agent].size(); i++)
-        {
-            for (int j = 0; j < m_agent_paths[agent].size(); j++)
-            {
-                if (j == i || m_agent_paths[agent][j].first == m_depots[agent])
-                {
-                    continue;
-                }
-
                 for (int k = 0; k < m_agent_paths[agent].size(); k++)
                 {
-                    if (k == j)
+                    if (dist_node_node[i][j] > m_pcn * max_dist || dist_node_node[j][k] > m_pcn * max_dist)
+                    {
+                        turn_node_node_node_cost[i][j][k] = m_kappa;
+                    }
+                    else
+                    {
+                        qreal r = m_nodes[m_agent_paths[agent][i].first].distanceTo(m_nodes[m_agent_paths[agent][j].first]);
+                        qreal e = m_nodes[m_agent_paths[agent][j].first].distanceTo(m_nodes[m_agent_paths[agent][k].first]);
+                        qreal s = m_nodes[m_agent_paths[agent][k].first].distanceTo(m_nodes[m_agent_paths[agent][i].first]);
+                        qreal t = (r * r + e * e - s * s) / (2.0 * r * e);
+                        if (t > 1.0)
+                        {
+                            t = 1.0;
+                        }
+                        else if (t < -1.0)
+                        {
+                            t = -1.0;
+                        }
+
+                        qreal turn = M_PI - acos(t);
+                        qreal turn_cost = 0;
+
+                        if (turn > M_PI / 4.0 - M_PI / 8.0 && turn < M_PI / 4.0 + M_PI / 8.0)
+                        {
+                            turn_cost = m_gamma_45;
+                        }
+                        else if (turn > M_PI / 2.0 - M_PI / 8.0 && turn < M_PI / 2.0 + M_PI / 8.0)
+                        {
+                            turn_cost = m_gamma_90;
+                        }
+                        else if (turn > 3.0 * M_PI / 4.0 - M_PI / 8.0 && turn < 3.0 * M_PI / 4.0 + M_PI / 8.0)
+                        {
+                            turn_cost = m_gamma_135;
+                        }
+
+                        turn_node_node_node_cost[i][j][k] = (quint32)(m_pcn * turn_cost);
+                    }
+                }
+            }
+        }
+
+        IloArray<IloBoolVarArray> x_node_node(env);
+        for (int i = 0; i < m_agent_paths[agent].size(); i++)
+        {
+            x_node_node.add(IloBoolVarArray(env, m_agent_paths[agent].size()));
+        }
+
+        IloNumVarArray u(env, m_agent_paths[agent].size(), 0.0, IloInfinity, ILOFLOAT);
+
+        try
+        {
+            IloModel mod(env);
+
+            IloExpr total_dist(env);
+            for (int i = 0; i < m_agent_paths[agent].size(); i++)
+            {
+                for (int j = 0; j < m_agent_paths[agent].size(); j++)
+                {
+                    if (j == i)
                     {
                         continue;
                     }
 
-                    total_turn += turn_node_node_node[i][j][k] * x_node_node[i][j] * x_node_node[j][k];
+                    total_dist += dist_node_node[i][j] * x_node_node[i][j];
                 }
             }
-        }
 
-        mod.add(IloMinimize(env, m_lambda * total_dist + m_gamma * total_turn));
-
-        total_dist.end();
-        total_turn.end();
-
-        for (int j = 0; j < m_agent_paths[agent].size(); j++)
-        {
-            IloExpr flow_in(env);
+            IloExpr total_turn_cost(env);
             for (int i = 0; i < m_agent_paths[agent].size(); i++)
             {
-                if (i == j)
+                for (int j = 0; j < m_agent_paths[agent].size(); j++)
                 {
-                    continue;
+                    if (j == i || m_agent_paths[agent][j].first == m_depots[agent])
+                    {
+                        continue;
+                    }
+
+                    for (int k = 0; k < m_agent_paths[agent].size(); k++)
+                    {
+                        if (k == j)
+                        {
+                            continue;
+                        }
+
+                        total_turn_cost += turn_node_node_node_cost[i][j][k] * x_node_node[i][j] * x_node_node[j][k];
+                    }
                 }
-
-                flow_in += x_node_node[i][j];
             }
 
-            mod.add(flow_in == 1);
+            mod.add(IloMinimize(env, (quint32)(m_lambda)*total_dist + total_turn_cost));
 
-            flow_in.end();
-        }
-
-        for (int i = 0; i < m_agent_paths[agent].size(); i++)
-        {
-            IloExpr flow_out(env);
-            for (int j = 0; j < m_agent_paths[agent].size(); j++)
-            {
-                if (j == i)
-                {
-                    continue;
-                }
-
-                flow_out += x_node_node[i][j];
-            }
-
-            mod.add(flow_out == 1);
-
-            flow_out.end();
-        }
-
-        for (int i = 0; i < m_agent_paths[agent].size(); i++)
-        {
-            if (m_agent_paths[agent][i].first == m_depots[agent])
-            {
-                continue;
-            }
+            total_dist.end();
+            total_turn_cost.end();
 
             for (int j = 0; j < m_agent_paths[agent].size(); j++)
             {
-                if (m_agent_paths[agent][j].first == m_depots[agent] || j == i)
+                IloExpr flow_in(env);
+                for (int i = 0; i < m_agent_paths[agent].size(); i++)
                 {
-                    continue;
+                    if (i == j)
+                    {
+                        continue;
+                    }
+
+                    flow_in += x_node_node[i][j];
                 }
 
-                mod.add(u[i] - u[j] + m_agent_paths[agent].size() * x_node_node[i][j] <= m_agent_paths[agent].size() - 1);
+                mod.add(flow_in == 1);
+
+                flow_in.end();
             }
-        }
 
-        IloCplex cplex(mod);
-        cplex.setParam(IloCplex::EpGap, m_gap);
-        cplex.setParam(IloCplex::TiLim, m_limit);
-        if (!cplex.solve() || cplex.getObjValue() / m_pcn >= m_kappa)
-        {
-            throw(-1);
-        }
-
-        result = true;
-
-        env.out() << "Minimume Cost = " << cplex.getObjValue() / m_pcn << endl;
-
-        for (int i = 0; i < m_agent_paths[agent].size(); i++)
-        {
-            for (int j = 0; j < m_agent_paths[agent].size(); j++)
+            for (int i = 0; i < m_agent_paths[agent].size(); i++)
             {
-                if (j == i)
+                IloExpr flow_out(env);
+                for (int j = 0; j < m_agent_paths[agent].size(); j++)
+                {
+                    if (j == i)
+                    {
+                        continue;
+                    }
+
+                    flow_out += x_node_node[i][j];
+                }
+
+                mod.add(flow_out == 1);
+
+                flow_out.end();
+            }
+
+            for (int i = 0; i < m_agent_paths[agent].size(); i++)
+            {
+                if (m_agent_paths[agent][i].first == m_depots[agent])
                 {
                     continue;
                 }
 
-                if (cplex.getValue(x_node_node[i][j]))
+                for (int j = 0; j < m_agent_paths[agent].size(); j++)
                 {
-                    m_agent_paths[agent][i].second = m_agent_paths[agent][j].first;
+                    if (m_agent_paths[agent][j].first == m_depots[agent] || j == i)
+                    {
+                        continue;
+                    }
 
-                    break;
+                    mod.add(u[i] - u[j] + m_agent_paths[agent].size() * x_node_node[i][j] <= m_agent_paths[agent].size() - 1);
+                }
+            }
+
+            IloCplex cplex(mod);
+            cplex.setParam(IloCplex::EpGap, m_gap);
+            cplex.setParam(IloCplex::TiLim, m_limit);
+            if (!cplex.solve() || cplex.getObjValue() / m_pcn >= m_kappa)
+            {
+                throw(-1);
+            }
+
+            result = true;
+
+            env.out() << "Minimume Cost = " << cplex.getObjValue() / m_pcn / 1000.0 << endl;
+
+            for (int i = 0; i < m_agent_paths[agent].size(); i++)
+            {
+                for (int j = 0; j < m_agent_paths[agent].size(); j++)
+                {
+                    if (j == i)
+                    {
+                        continue;
+                    }
+
+                    if (cplex.getValue(x_node_node[i][j]))
+                    {
+                        m_agent_paths[agent][i].second = m_agent_paths[agent][j].first;
+
+                        break;
+                    }
                 }
             }
         }
-    }
-    catch (IloException &e)
-    {
-        cerr << "Optimization Exception Caught: " << e << endl;
-    }
-    catch (...)
-    {
-        cerr << "Unable to plan a path for agent: " << agent << endl;
-    }
+        catch (IloException &e)
+        {
+            cerr << "Optimization Exception Caught: " << e << endl;
+        }
+        catch (...)
+        {
+            cerr << "Unable to plan a path for agent: " << agent << endl;
+        }
 
-    env.end();
+        env.end();
 
-    return result;
+        return result;
+    }
 }
-//
+
 bool UBPlanner::validatePath(quint32 agent)
 {
     qreal total_dist = 0;
     qreal total_turn = 0;
+    qreal total_turn_cost = 0;
 
     quint32 ang1 = 0;
     quint32 ang2 = 0;
@@ -685,22 +747,29 @@ bool UBPlanner::validatePath(quint32 agent)
         if (turn > M_PI / 4.0 - M_PI / 8.0 && turn < M_PI / 4.0 + M_PI / 8.0)
         {
             ang1++;
+            total_turn_cost += m_gamma_45;
         }
         else if (turn > M_PI / 2.0 - M_PI / 8.0 && turn < M_PI / 2.0 + M_PI / 8.0)
         {
             ang2++;
+            total_turn_cost += m_gamma_90;
         }
         else if (turn > 3.0 * M_PI / 4.0 - M_PI / 8.0 && turn < 3.0 * M_PI / 4.0 + M_PI / 8.0)
         {
             ang3++;
+            total_turn_cost += m_gamma_135;
         }
 
         i = j;
         j = k;
     }
 
-    cout << "Total Distance: " << total_dist << " | Number of 45' Turn: " << ang1 << " | Number of 90' Turn: " << ang2 << " | Number of 135' Turn: " << ang3 << endl;
-    cout << "Total Cost: " << m_lambda * total_dist + m_gamma * total_turn << endl;
+    cout << "***************************" << endl;
+    cout << "*** UB-ANC-Planner_LKHD ***" << endl;
+    cout << "Total Distance: " << total_dist << " | Total Turn: " << total_turn * 180 / M_PI << " | Number of 45' Turn: " << ang1 << " | Number of 90' Turn: " << ang2 << " | Number of 135' Turn: " << ang3 << endl;
+    cout << "Distance Cost (lambda=" << m_lambda << "): " << m_lambda * total_dist << endl;
+    cout << "Turn Cost     (gamma(m_gamma, 45, 90, 135)=" << m_gamma << "," << m_gamma_45 << "," << m_gamma_90 << "," << m_gamma_135 << "): " << total_turn_cost << endl;
+    cout << "Total Cost: " << (m_lambda * total_dist + total_turn_cost) / 1000.0 << endl; // conversion of coefficients
 
     return true;
 }
@@ -758,10 +827,208 @@ bool UBPlanner::buildMission(quint32 agent)
     wp->setLongitude(m_nodes[node].longitude());
     wps.append(wp);
 
-    if (!storeWaypoints(tr("mission_%1.txt").arg(agent), wps))
+    quint32 last_dot = m_file.lastIndexOf(".");
+    QString raw_name = m_file;
+    if (last_dot > 0)
+    {
+        raw_name = m_file.left(last_dot);
+    }
+    if (!storeWaypoints(tr("mission_lkhd_%1.txt").arg(agent), wps))
     {
         return false;
     }
 
     return true;
+}
+
+void UBPlanner::build_grid()
+{
+    cout << "Start build_grid instead of decomposing" << endl;
+    QList<Waypoint *> wps = loadWaypoints(m_file);
+    QList<Waypoint *>::const_iterator i = wps.begin();
+    while (i != wps.end())
+    {
+        if ((*i)->getAction() == MAV_CMD_NAV_WAYPOINT)
+        { // valid cell
+            m_nodes << QGeoCoordinate((*i)->getLatitude(), (*i)->getLongitude());
+        }
+        else if ((*i)->getAction() == MAV_CMD_NAV_RETURN_TO_LAUNCH)
+        {
+            m_depots << 0;
+            m_agents << QGeoCoordinate((*i)->getLatitude(), (*i)->getLongitude());
+            m_agent_paths << QVector<QPair<quint32, quint32>>();
+        }
+
+        i++;
+    }
+    cout << "Number of nodes: " << m_nodes.size() << endl;
+    cout << "Number of agents: " << m_agents.size() << endl;
+
+    if (m_agents.size() == 1)
+    {
+        cout << "There is only one agent, will assign all nodes to it." << endl;
+        qreal min_dist = m_kappa;
+        for (int i = 0; i < m_nodes.size(); i++)
+        {
+            m_agent_paths[0] << QPair<quint32, quint32>(i, i);
+
+            qreal dist = m_agents[0].distanceTo(m_nodes[i]);
+            if (dist < min_dist)
+            {
+                min_dist = dist;
+                m_depots[0] = i;
+            }
+        }
+    }
+    else
+    {
+        cout << "There is more than one agent. going to run divide, NO GUARANTEE!" << endl;
+        if (!divide())
+        {
+            cerr << "Unable to divide the area between agents!" << endl;
+            cerr << "Failed to divide area for " << m_agents.size() << " agents" << endl;
+
+            exit(EXIT_FAILURE);
+        }
+    }
+}
+
+bool UBPlanner::loadObstacleMap(const QVector<QVector<int>> &grid_data, int width, int height)
+{
+    if (grid_data.isEmpty() || width <= 0 || height <= 0)
+    {
+        qWarning() << "Invalid grid data provided";
+        return false;
+    }
+
+    m_obstacle_map = grid_data;
+    m_grid_width = width;
+    m_grid_height = height;
+
+    qDebug() << "Binary obstacle map loaded successfully";
+    qDebug() << "Grid size:" << m_grid_width << "x" << m_grid_height;
+    qDebug() << "Values: -1 for free space, 1 for obstacles";
+    return true;
+}
+
+bool UBPlanner::loadObstacleMapFromFile(const QString &filename, int width, int height)
+{
+    QFile file(filename);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        qWarning() << "Failed to open obstacle map file:" << filename;
+        return false;
+    }
+
+    QTextStream in(&file);
+    QVector<QVector<int>> grid_data;
+
+    // Read the grid data from file
+    for (int row = 0; row < height; row++)
+    {
+        QVector<int> row_data;
+        QString line = in.readLine();
+        if (line.isNull())
+        {
+            qWarning() << "Unexpected end of file at row" << row;
+            return false;
+        }
+
+        QStringList values = line.split(QRegExp("\\s+"), QString::SkipEmptyParts);
+        if (values.size() != width)
+        {
+            qWarning() << "Row" << row << "has" << values.size() << "values, expected" << width;
+            return false;
+        }
+
+        for (int col = 0; col < width; col++)
+        {
+            bool ok;
+            int value = values[col].toInt(&ok);
+            if (!ok || (value != -1 && value != 1))
+            {
+                qWarning() << "Invalid value at row" << row << "col" << col << ":" << values[col];
+                return false;
+            }
+            row_data.append(value);
+        }
+        grid_data.append(row_data);
+    }
+
+    file.close();
+
+    // Load the grid data using the existing function
+    return loadObstacleMap(grid_data, width, height);
+}
+
+bool UBPlanner::checkLineIntersection(const QGeoCoordinate &p, const QGeoCoordinate &q, const QVector<QVector<int>> &obstacle_map, int grid_width, int grid_height)
+{
+    qDebug() << "DEBUG: checkLineIntersection called";
+    qDebug() << "DEBUG: Grid dimensions:" << grid_width << "x" << grid_height;
+    qDebug() << "DEBUG: Obstacle map empty:" << obstacle_map.isEmpty();
+
+    if (obstacle_map.isEmpty() || grid_width <= 0 || grid_height <= 0)
+    {
+        qDebug() << "DEBUG: No obstacle map or invalid dimensions, returning false";
+        return false; // No obstacle map, assume no obstacles
+    }
+
+    // Convert coordinates to grid indices using the same scaling as grid_generator.py
+    // Coordinates are already scaled (divided by 1e5), so multiply by 1e5 to get grid indices
+    int x1 = (int)(p.longitude() * 1e5);
+    int y1 = (int)(p.latitude() * 1e5);
+    int x2 = (int)(q.longitude() * 1e5);
+    int y2 = (int)(q.latitude() * 1e5);
+
+    qDebug() << "DEBUG: Converted coordinates - x1:" << x1 << "y1:" << y1 << "x2:" << x2 << "y2:" << y2;
+
+    // Use Bresenham's line algorithm to check each grid cell along the line
+    int dx = abs(x2 - x1);
+    int dy = abs(y2 - y1);
+    int sx = (x1 < x2) ? 1 : -1;
+    int sy = (y1 < y2) ? 1 : -1;
+    int err = dx - dy;
+
+    int x = x1, y = y1;
+
+    qDebug() << "DEBUG: Starting Bresenham algorithm";
+    int step_count = 0;
+    while (true)
+    {
+        step_count++;
+        // Check if current grid cell is an obstacle (value == 1)
+        if (x >= 0 && x < grid_width && y >= 0 && y < grid_height)
+        {
+            qDebug() << "DEBUG: Step" << step_count << "- Checking grid cell [" << x << "," << y << "] = " << obstacle_map[y][x];
+            if (obstacle_map[y][x] == 1)
+            { // 1 represents obstacle
+                qDebug() << "DEBUG: OBSTACLE FOUND at grid cell [" << x << "," << y << "]!";
+                return true; // Line intersects with obstacle
+            }
+        }
+        else
+        {
+            qDebug() << "DEBUG: Step" << step_count << "- Grid cell [" << x << "," << y << "] is outside grid bounds";
+        }
+
+        if (x == x2 && y == y2)
+        {
+            qDebug() << "DEBUG: Reached end point, no obstacles found";
+            break;
+        }
+
+        int e2 = 2 * err;
+        if (e2 > -dy)
+        {
+            err -= dy;
+            x += sx;
+        }
+        if (e2 < dx)
+        {
+            err += dx;
+            y += sy;
+        }
+    }
+
+    return false; // No obstacles found along the line
 }

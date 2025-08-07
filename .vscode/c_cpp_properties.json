@@ -4,9 +4,11 @@
       "name": "Linux",
       "includePath": [
         "${workspaceFolder}/**",
-        "/home/umesh",
+        "/home/umesh/Documents/LKH-Drones",
         "/usr/include/x86_64-linux-gnu/qt5/QtCore",
-        "${workspaceFolder}/"
+        "${workspaceFolder}/",
+        "/usr/include/x86_64-linux-gnu/qt5",
+        "/usr/include/x86_64-linux-gnu/qt5/QtGui"
       ],
       "defines": [],
       "compilerPath": "/usr/bin/gcc",

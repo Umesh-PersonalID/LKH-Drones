@@ -21,4 +21,4 @@ http://www.math.uwaterloo.ca/tsp/concorde/downloads/codes/src/co031219.tgz
 
 
 command:
-./ub-anc-planner -f mission_file.txt -a 1164 -m 173 -r 8
+./ub-anc-planner -f mission_file.txt --resolution 1000

@@ -1,0 +1,48 @@
+# input file for grid_generator
+# comments only at start
+# first line is reference latitude
+# next line is reference longitude
+# next line is resolution (cell size) in meters (does planner accept foat?)
+# next line is X offset of grid from reference longitude, in meters
+# next line is Y offset of grid from reference latitude, in meters
+# next line is grid columns (int)
+# next line is grid rows (int)
+# next lines (row x col) is the whole grid with each cell shown by a single digit, 0 for coverage area, 1 for obstacle
+#42.99849
+#-78.77810
+0
+0
+0.0
+0.0
+1.0
+30
+0, 0
+10, 00
+20, 00
+30, 00
+40, 00
+00, 10
+10, 10
+20, 10
+30, 10
+40, 10
+00, 20
+10, 20
+20, 20
+30, 20
+40, 20
+00, 30
+10, 30
+20, 30
+30, 30
+40, 30
+00, 40
+10, 40
+20, 40
+30, 40
+40, 40
+00, 50
+10, 50
+20, 50
+30, 50
+40, 50

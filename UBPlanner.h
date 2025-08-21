@@ -7,6 +7,9 @@
 #include <QGeoCoordinate>
 
 #include <QObject>
+#include <QFile>
+#include <QTextStream>
+#include <QStringList>
 
 class Waypoint;
 
@@ -47,9 +50,6 @@ protected:
     QVector<QVector<QPair<quint32, quint32>>> m_agent_paths; // VOV containing
 
     // binary obstacle map (300x300 grid: -1 for free space, 1 for obstacles)
-    QVector<QVector<int>> m_obstacle_map;
-    int m_grid_width;
-    int m_grid_height;
 
 protected:
     bool divide(); // divides the area amung the agents
@@ -75,8 +75,6 @@ public:
     void setGamma(qreal gamma) { m_gamma = gamma; }
     void setkappa(quint32 kappa) { m_kappa = kappa; }
     void setPrecision(quint32 pcn) { m_pcn = pcn; }
-    bool loadObstacleMap(const QVector<QVector<int>> &grid_data, int width, int height);
-    bool loadObstacleMapFromFile(const QString &filename, int width = 300, int height = 300);
 };
 
 #endif // UBPLANNER_H

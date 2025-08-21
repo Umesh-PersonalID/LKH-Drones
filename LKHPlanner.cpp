@@ -2,7 +2,16 @@
 #include "LKHPlanner.h"
 
 #include <QDebug>
-
+#include <QString>
+#include <QStringList>
+#include <bits/stdc++.h>
+#include <QFile>
+#include <QTextStream>
+#include <iostream>
+#include <QGeoCoordinate>
+#include <QPoint>
+#include <cmath>
+using namespace std;
 extern "C"
 {
 #include "linkern.h"
@@ -20,30 +29,200 @@ extern "C"
     double cycle_length(int ncount, int *cyc, distobj *D);
 }
 
+QVector<QVector<int>> m_obstacle_map; // Binary obstacle map, -1 for free space, 1 for obstacles
+int m_grid_width = 100;
+int m_grid_height = 100;
 QVector<QVector<quint32>> g_dist;
 QVector<QVector<QVector<quint32>>> g_turn;
 
+bool loadObstacleMap(const QString &filename, QVector<QVector<int>> &obstacle_map, int &grid_width, int &grid_height)
+{
+    QFile file(filename);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    {
+        cout << "Error: Cannot open obstacle file: " << filename.toStdString() << endl;
+        return false;
+    }
+
+    QTextStream in(&file);
+    QStringList lines;
+
+    // int gh = -1, gw = -1;
+    bool fistline = true;
+    while (!in.atEnd())
+    {
+        QString line = in.readLine().trimmed();
+        if (fistline)
+        {
+            auto values = line.split(" ", QString::SkipEmptyParts);
+            if (values.size() != 2)
+            {
+                cout << "Error: First line must contain grid width and height" << endl;
+                return false;
+            }
+            grid_width = values[0].toInt();
+            grid_height = values[1].toInt();
+            fistline = false;
+            continue;
+        }
+        if (!line.isEmpty())
+        {
+            lines.append(line);
+        }
+    }
+    file.close();
+
+    if (lines.isEmpty())
+    {
+        cout << "Error: Obstacle file is empty" << endl;
+        return false;
+    }
+
+    // grid_height = lines.size();
+    // auto firstRow = lines[0].split(" ", QString::SkipEmptyParts);
+    // grid_width = firstRow.size();
+
+    cout << "Loading obstacle map: " << grid_width << "x" << grid_height << endl;
+
+    obstacle_map.clear();
+    obstacle_map.resize(grid_height);
+
+    for (int row = 0; row < grid_height; row++)
+    {
+        obstacle_map[row].resize(grid_width);
+        auto values = lines[row].split(" ", QString::SkipEmptyParts);
+
+        if (values.size() != grid_width)
+        {
+            cout << "Error: Row " << row << " has " << values.size() << " values, expected " << grid_width << endl;
+
+            return false;
+        }
+
+        for (int col = 0; col < grid_width; col++)
+        {
+            obstacle_map[row][col] = values[col].toInt();
+        }
+    }
+
+    cout << "Successfully loaded obstacle map: " << grid_width << "x" << grid_height << endl;
+    return true;
+}
+
+bool checkforobstacle(const QGeoCoordinate &a, const QGeoCoordinate &b, const QVector<QVector<int>> &obstacle_map, int grid_width, int grid_height)
+{
+    if (obstacle_map.isEmpty() || grid_width <= 0 || grid_height <= 0)
+    {
+        // cout << "Obstacle map is empty or invalid grid size." << endl;
+        return false;
+    }
+
+    // cout << "Checking for obstacles between (" << a.latitude() << ", " << a.longitude() << ") and ("
+    //      << b.latitude() << ", " << b.longitude() << ")" << endl;
+    // cout << "Grid coordinates: (" << a.latitude() * 1e5 << ", " << a.longitude() * 1e5 << ") to (" << b.latitude() * 1e5 << ", " << b.longitude() * 1e5 << ")" << endl;
+
+    // Bresenham's line algorithm
+    int x0 = static_cast<int>(a.longitude() * 1e5);
+    int y0 = static_cast<int>(a.latitude() * 1e5);
+    int x1 = static_cast<int>(b.longitude() * 1e5);
+    int y1 = static_cast<int>(b.latitude() * 1e5);
+
+    // cout << "Starting Bresenham's algorithm from (" << x0 << ", " << y0 << ") to (" << x1 << ", " << y1 << ")" << endl;
+    int dx = std::abs(x1 - x0);
+    int dy = -std::abs(y1 - y0);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx + dy; // error term
+
+    while (true)
+    {
+        // Check bounds to avoid segmentation fault
+        if (x0 < 0 || x0 >= grid_width || y0 < 0 || y0 >= grid_height)
+        {
+            cout << "Grid coordinates out of bounds: (" << x0 << ", " << y0 << ")" << endl;
+            break;
+        }
+
+        // Check if this grid cell is an obstacle (assuming 1 = obstacle, -1 = free space)
+        if (obstacle_map[grid_height - 1 - y0][x0] == 1)
+        {
+            // obstacle found between points a and b
+            cout << "we are checking for obstacles between (" << a.latitude() * 1e5 << ", " << a.longitude() * 1e5 << ") and ("
+                 << b.latitude() * 1e5 << ", " << b.longitude() * 1e5 << ")" << endl;
+            cout << "Obstacle detected at grid cell (" << x0 << ", " << y0 << ")" << endl;
+            return true; // obstacle found
+        }
+
+        // Check if we've reached the end point
+        if (x0 == x1 && y0 == y1)
+            break;
+
+        // Bresenham's algorithm step
+        int e2 = 2 * err;
+        if (e2 >= dy)
+        {
+            err += dy;
+            x0 += sx;
+        }
+        if (e2 <= dx)
+        {
+            err += dx;
+            y0 += sy;
+        }
+    }
+
+    // cout << "No obstacles detected along the path." << endl;
+    return false; // no obstacle detected
+}
+
 void setData(int ncount, CCdatagroup *D, qreal res, quint32 pcs, qreal lambda, qreal gamma, qreal m_gamma_45, qreal m_gamma_90, qreal m_gamma_135, quint32 kappa)
 {
+    // UMESH[TODO]: implemented obstacle check and updated the distance calculation accordingly and use m_obstacle_map
+
+    // function to compute brehesenham line pixels between two points
     // sqrt(2) < 1.5 < 2
     qreal max_dist = 1.5 * res;                 // upper bound on distance
     g_dist = QVector<QVector<quint32>>(ncount); // init vector of vector of ints of capcity equalling the total number of nodes (container needs to hold 1 onto 1 relation)
+    cout << kappa << endl;
     for (int i = 0; i < ncount; i++)
     {                                         // for each index (i) less than the total node count
         g_dist[i] = QVector<quint32>(ncount); // set up a vector for each node to contain distance to the other nodes
         for (int j = 0; j < ncount; j++)
-        {                                                                                               // for each index (j) less than the total node count
+        { // for each index (j) less than the total node count
+            //  implemented obstacle check and updated the distance calculation accordingly and use m_obstacle_map
             qreal dist = QGeoCoordinate(D->x[i], D->y[i]).distanceTo(QGeoCoordinate(D->x[j], D->y[j])); // calculate the distance from node i to node j
+
+            auto a = QGeoCoordinate(D->x[i], D->y[i]);
+            auto b = QGeoCoordinate(D->x[j], D->y[j]);
+            // cout << a.longitude() * 1e5 << " " << a.latitude() * 1e5 << " " << b.longitude() * 1e5 << " " << b.latitude() * 1e5 << endl;
+            if (checkforobstacle(a, b, m_obstacle_map, m_grid_width, m_grid_height))
+            {
+                // cout << "Obstacle detected between node " << i << " and node " << j << endl;
+                g_dist[i][j] = kappa; // set distance to kappa if there is an obstacle
+                continue;             // skip to the next iteration if an obstacle is detected
+            }
+
             if (!dist || dist > max_dist)
             {                         // first condition means o distance, second means the calculated distance is farther than possible
                 g_dist[i][j] = kappa; // TODO: not sure why we use kappa, which is defined as the drones carrying capacity
             }
             else
             {
-                g_dist[i][j] = lambda * pcs * dist; //
+                g_dist[i][j] = lambda * pcs * dist / 1000; //
             }
         }
     }
+
+    // print g_dist
+    // cout << "DEBUG: g_dist matrix:" << endl;
+    // for (int i = 0; i < ncount; i++)
+    // {
+    //     for (int j = 0; j < ncount; j++)
+    //     {
+    //         cout << g_dist[i][j] << " ";
+    //     }
+    //     cout << endl;
+    // }
 
     g_turn = QVector<QVector<QVector<quint32>>>(ncount); // set vector of vector of vector of ints of capcity equalling the total number of nodes
     for (int i = 0; i < ncount; i++)
@@ -104,9 +283,9 @@ void clearData()
     }
     g_dist.clear();
 
-    for (int i = 0; i < g_dist.size(); i++)
+    for (int i = 0; i < g_turn.size(); i++)
     {
-        for (int j = 0; j < g_dist.size(); j++)
+        for (int j = 0; j < g_turn[i].size(); j++)
         {
             g_turn[i][j].clear();
         }
@@ -141,6 +320,15 @@ bool LKHPlanner::planAgent(quint32 agent)
 {
     bool result = false;
 
+    if (!loadObstacleMap("obstacles.txt", m_obstacle_map, m_grid_width, m_grid_height))
+    {
+        cout << "Failed to load obstacle map, proceeding without obstacles" << endl;
+        // Initialize empty obstacle map
+        m_grid_width = 40;
+        m_grid_height = 50;
+        m_obstacle_map = QVector<QVector<int>>(m_grid_height, QVector<int>(m_grid_width, -1));
+    }
+
     int ncount = m_agent_paths[agent].size(), seed = 0;
     double val, kzeit;
     double startzeit;
@@ -169,6 +357,11 @@ bool LKHPlanner::planAgent(quint32 agent)
         dat.y[i] = m_nodes[m_agent_paths[agent][i].first].longitude();
     }
 
+    // for (int i = 0; i < ncount; i++)
+    // {
+    //     // printf("Node %d: (%f, %f)\n", i, dat.x[i], dat.y[i]);
+    //     cout << "Node " << i << ": (" << dat.x[i] << ", " << dat.y[i] << ")" << endl;
+    // }
     setData(ncount, &dat, m_res, m_pcn, m_lambda, m_gamma, m_gamma_45, m_gamma_90, m_gamma_135, m_kappa);
 
     incycle = CC_SAFE_MALLOC(ncount, int);
